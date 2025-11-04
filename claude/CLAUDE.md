@@ -60,14 +60,103 @@ uv run pytest
 - **ALWAYS** use dependency injection via parameters or closures
 - **ALWAYS** use `@dataclass(frozen=True)` or `NamedTuple` for immutable data
 - **NEVER** create deep inheritance hierarchies (max depth: 1)
-- Define interfaces in `src/interfaces/` using ABC or `typing.Protocol`
+- **ALWAYS** prefer `typing.Protocol` for interface contracts (structural subtyping)
+- **ONLY** use ABC when shared implementation logic is required
+- Define interfaces in `src/interfaces/` using `typing.Protocol` by default
+
+### Constructor Patterns
+
+**Classmethod constructors (prefer for class instances):**
+```python
+class Client:
+    @classmethod
+    def from_spec(cls, spec_path: str) -> "Client":
+        """Validate before construction."""
+        if not Path(spec_path).exists():
+            raise FileNotFoundError(f"Not found: {spec_path}")
+        return cls(...)  # Construct after validation
+
+# Usage: No naming collision
+from mylib import Client
+client = Client.from_spec("spec.json")
+```
+
+**Factory functions (use for closures/functions, not class instances):**
+```python
+def make_processor(config: Config):
+    """Return function, not class instance."""
+    def process(data: str) -> bool:
+        return process_with_config(data, config)
+    return process
+```
+
+**When to use:**
+- `@classmethod` → Creating class instances (from_spec, from_config, from_url)
+- Factory function → Creating closures, returning functions
+- Plain `__init__` → Simple initialization, no validation needed
+
+### Protocol vs ABC: Decision Matrix
+
+**Default Choice: Protocol** (PEP 544 structural subtyping)
+
+```python
+from typing import Protocol
+
+class DataProcessor(Protocol):
+    """Pure interface contract - structural subtyping."""
+    def process(self, data: str) -> bool: ...
+    def validate(self, data: str) -> bool: ...
+
+# Any class with matching methods satisfies the protocol
+class JSONProcessor:  # No inheritance needed!
+    def process(self, data: str) -> bool:
+        return True
+    def validate(self, data: str) -> bool:
+        return bool(data)
+
+# Type checker validates compatibility
+processor: DataProcessor = JSONProcessor()  # ✅ Valid
+```
+
+**When to Use Protocol:**
+- ✅ Pure interface contracts (no shared implementation)
+- ✅ Need duck typing with compile-time safety
+- ✅ Want to avoid inheritance coupling
+- ✅ Third-party classes should satisfy interface without modification
+- ✅ Easier mocking (any object with matching signature works)
+
+**When to Use ABC:**
+- ⚠️ Shared implementation logic across subclasses (e.g., common `__init__`)
+- ⚠️ Need runtime validation with `isinstance()` checks
+- ⚠️ Enforcing method implementation at class definition time
+
+```python
+from abc import ABC, abstractmethod
+
+class Stage(ABC):  # Use ABC only when sharing implementation
+    def __init__(self, name: str):
+        self.name = name  # Shared initialization logic
+
+    @abstractmethod
+    async def execute(self) -> None: ...
+
+class ValidationStage(Stage):  # Inherits __init__
+    async def execute(self) -> None:
+        print(f"Executing {self.name}")
+```
+
+**Key Principles:**
+- **Default to Protocol** unless you need shared implementation
+- Protocols are compile-time only (type hints)
+- ABCs enforce contracts at runtime (class definition)
+- Use `@runtime_checkable` decorator if you need `isinstance()` with Protocols
 
 ### SOLID Enforcement
 - **Single Responsibility:** Each module/function/class has ONE purpose
 - **Open/Closed:** Extend via abstractions, not modifications
 - **Liskov Substitution:** Implementations must honor contracts exactly
-- **Interface Segregation:** Small, focused ABCs/Protocols only
-- **Dependency Inversion:** Business logic depends on abstractions only
+- **Interface Segregation:** Small, focused Protocols only
+- **Dependency Inversion:** Business logic depends on Protocol abstractions only
 
 ### DRY Principles
 - **ALWAYS** consolidate repeated code immediately
@@ -113,8 +202,7 @@ Use `Makefile` with these targets:
 ### Directory Layout
 ```
 src/
-  interfaces/    # ABCs and Protocols
-  services/      # Business logic
+  interfaces/    # Protocols (and rare ABCs with shared implementation)
   utils/         # Helpers
 tests/           # Test suite
 ```
@@ -137,26 +225,44 @@ def get_settings() -> Settings:
 ## Composition Example Template
 
 ```python
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol
 
-class ServiceInterface(ABC):
-    @abstractmethod
+# Protocol-first interfaces (structural subtyping)
+class DataProcessor(Protocol):
+    """Process data - no inheritance required."""
     def process(self, data: str) -> bool: ...
 
 class Notifier(Protocol):
+    """Send notifications - structural contract."""
     def notify(self, message: str) -> None: ...
 
+# Immutable configuration
 @dataclass(frozen=True)
 class Config:
     setting: str
 
-def make_service(dependency: ServiceInterface, notifier: Notifier, config: Config):
-    def execute(data: str):
-        if dependency.process(data):
-            notifier.notify(f"Processed: {data}")
+# Factory function with dependency injection
+def make_service(processor: DataProcessor, notifier: Notifier, config: Config):
+    """Create service using injected dependencies."""
+    def execute(data: str) -> None:
+        if processor.process(data):
+            notifier.notify(f"Processed with {config.setting}: {data}")
     return execute
+
+# Any class with matching methods satisfies the protocol
+class JSONProcessor:  # No inheritance!
+    def process(self, data: str) -> bool:
+        return bool(data)
+
+class EmailNotifier:  # No inheritance!
+    def notify(self, message: str) -> None:
+        print(f"Email: {message}")
+
+# Compose at runtime
+config = Config(setting="strict")
+service = make_service(JSONProcessor(), EmailNotifier(), config)
+service("test data")
 ```
 
 ## Personal Workflow Notes
@@ -175,9 +281,10 @@ def make_service(dependency: ServiceInterface, notifier: Notifier, config: Confi
 Before any commit, verify:
 - [ ] All public symbols have type annotations
 - [ ] `ty check` passes in strict mode
-- [ ] All ABCs/Protocols have implementations
+- [ ] Interfaces use Protocol (ABCs only if shared implementation needed)
+- [ ] All Protocols have concrete implementations
 - [ ] No inheritance depth > 1
-- [ ] Business logic imports only abstractions
+- [ ] Business logic imports only Protocol abstractions
 - [ ] `ruff check` passes with no errors
 - [ ] `pytest` passes with ≥90% coverage
 - [ ] No secrets in code or logs
