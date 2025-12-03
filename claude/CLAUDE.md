@@ -1,3 +1,5 @@
+# General Guidelines
+
 # Python Development Standards
 
 ## Critical Tooling Stack
@@ -55,6 +57,14 @@ uv run pytest
 
 ## Architecture Principles (NON-NEGOTIABLE)
 
+### Architecture Design Heuristics
+- Only include components explicitly required by the stated requirements
+- If a capability isn't mentioned, don't design for it
+- Ask before adding scope ("Should this system also handle X?")
+- Domain models exist only for data crossing component boundaries
+- Each Protocol: 2-5 methods typical; more suggests conflated responsibilities
+
+
 ### Composition-First Design
 - **ALWAYS** prefer pure functions and factory functions over classes
 - **ALWAYS** use dependency injection via parameters or closures
@@ -63,6 +73,16 @@ uv run pytest
 - **ALWAYS** prefer `typing.Protocol` for interface contracts (structural subtyping)
 - **ONLY** use ABC when shared implementation logic is required
 - Define interfaces in `src/interfaces/` using `typing.Protocol` by default
+
+### Functional Core, Imperative Shell
+
+- **Core (pure):** Business logic as pure functions — no I/O, no side effects, deterministic
+- **Shell (impure):** Thin outer layer handles all I/O (DB, network, files, clock, randomness)
+- **Data Flow:** Shell gathers data → passes to core → core returns decisions → shell executes effects
+- **Testing:** Core is unit-tested with plain assertions; shell is integration-tested or mocked
+
+**Boundary Rule:** If a function does I/O, it belongs in the shell. If it contains business logic, it belongs in the core and must be pure.
+
 
 ### Constructor Patterns
 
