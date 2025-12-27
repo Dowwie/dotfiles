@@ -12,6 +12,8 @@ paths:
 - **Prefer Access syntax (`opts[:key]`) over `Map.get/2` or `Keyword.get/2`** — Avoids locking into specific data structures
 - **Use `map.key` for required keys, `map[:key]` for optional keys** — Static access fails fast on missing keys; dynamic access returns `nil`
 - **Pattern match to assert structure** — Use `%User{} = user` before accessing fields for compile-time safety
+- **Never use map access syntax (`struct[:field]`) on structs** — Structs do not implement Access by default. Use `struct.field` or `Ecto.Changeset.get_field/2`
+- **List access** — Elixir lists do not support index-based access (`list[i]`). Use `Enum.at(list, i)`
 
 ## Error Handling
 
@@ -48,9 +50,10 @@ paths:
 
 - **Use `if` for boolean conditions** — Don't abuse function clauses for simple true/false branching
 - **Use `case` for pattern matching on data** — Avoid unnecessary indirection through private functions
-- **Use `cond` for multiple boolean conditions** — Scales better than nested `if` or function clauses with boolean args
+- **Use `cond` for multiple boolean conditions** — Scales better than nested `if` or function clauses with boolean args. **Never use `else if`**
 - **Use `with` for chaining fallible operations** — When operations return `{:ok, _} | {:error, _}`
 - **Use `for` comprehensions for filter + map + reduce** — Often clearer than chained `Enum` calls
+- **Variable Rebinding** — In block expressions (`if`, `case`, `cond`), explicitly rebind variables if the result is needed (e.g., `socket = if ... do ... end`). Do not rebind inside the block expecting it to leak out
 
 ### Pattern Matching and Guards
 
@@ -69,7 +72,7 @@ paths:
 
 ### Module Structure
 
-- **One module per file** — Unless a module is only used internally by another
+- **One module per file** — Unless a module is only used internally by another. **Never** nest multiple modules in the same file to avoid cyclic dependencies
 - **Keep related code together** — Place private helpers near their public function, not at the bottom
 - **Order module contents consistently**: `@moduledoc`, `@behaviour`, `use`, `import`, `require`, `alias`, attributes, `defstruct`, types, callbacks, functions
 - **Use `__MODULE__`** — Refer to the current module by its pseudo-variable
@@ -87,19 +90,81 @@ paths:
 - **Elixirfy external data** — Convert JSON from APIs to structs at the boundary, not raw maps throughout
 - **Add typespecs to public functions** — Documents inputs/outputs clearly, enables Dialyzer
 - **Keep structs under 32 fields** — Larger structs lose BEAM optimizations; nest or split if needed
+- **Date/Time** — Use the standard library (`Time`, `Date`, `DateTime`, `Calendar`) or `date_time_parser` for parsing. Avoid other deps
+- **Security** — Don't use `String.to_atom/1` on user input
 
-## Input Validation with Embedded Schemas
+## Mix and Tooling
 
-Use `Ecto.Schema.embedded_schema` to define validation schemas for external input (API requests, forms, config) separate from database schemas. This follows the "parse, don't validate" principle.
+- **Task usage** — Read docs/options (`mix help task_name`)
+- **Testing** — Debug with `mix test test/file.exs` or `mix test --failed`
+- **Dependencies** — `mix deps.clean --all` is rarely needed; avoid it
 
-### Why Embedded Schemas
+## Process Design
 
-- **Decouple UI/API shape from database shape** — Input fields like `first_name`/`last_name` don't pollute your `User` schema
-- **Get changeset validation without a database** — Full power of `Ecto.Changeset` for any data
-- **Compile-time guarantees** — Struct field access catches typos; typespecs document expectations
-- **Clear transformation boundary** — Parse raw input → validated struct → domain logic
+- **Don't use processes for code organization** — Processes are for concurrency, shared state, and error isolation
+- **Encapsulate process interaction** — Don't scatter `GenServer.call/cast` across modules; wrap in a module API
+- **Avoid sending large messages** — Data is copied between processes; send only what's needed
+- **Provide child specs, not supervision trees** — Let users add your processes to their own supervisors
+- **Child Specs** — Use `{DynamicSupervisor, name: Name}` syntax for named processes in specs
+- **Concurrency** — Use `Task.async_stream(collection, callback, timeout: :infinity)` for concurrent enumeration
 
-### Pattern
+## Library Design
+
+- **Don't use application config for libraries** — Pass options as function arguments or keyword lists
+- **Stay in your namespace** — Library `:my_lib` should only define modules under `MyLib.*`
+- **Provide both `foo` and `foo!` variants** — Let callers choose whether to handle errors or raise
+- **HTTP Requests** — Use `:req` (`Req`) library. Avoid `:httpoison`, `:tesla`, `:httpc`
+
+## Macros and Metaprogramming
+
+- **Avoid macros when functions suffice** — Macros are harder to understand and debug
+- **Don't propagate dependencies from macros** — Avoid `import` inside `__using__/1` that surprises users
+- **Keep macro-generated code small** — Large expansions slow compilation and bloat artifacts
+
+## Testing
+
+- **Use `for` comprehensions for collection assertions** — `for post <- posts, do: assert %Post{} = post` gives better failure messages than `assert Enum.all?(...)`
+- **Put expected result on the right** — `assert actual == expected` unless pattern matching
+- **Test through the interface** — Prefer integration-style tests that call public APIs
+- **Generate unique test data** — Enables concurrent test execution
+
+## Formatting and Style
+
+- **Run `mix format`** — Use the official formatter for all code
+- **Limit lines to 98 characters** — Configure in `.formatter.exs` if needed
+- **Use blank lines to separate logical sections** — Between `def`s, after multiline assignments
+- **Avoid trailing whitespace and ensure final newline**
+- **Write self-documenting code** — Prefer clear names over comments explaining unclear code
+
+## Naming Conventions
+
+- **`snake_case`** for atoms, variables, functions, and file names
+- **`CamelCase`** for modules (keep acronyms uppercase: `HTTPClient`, `XMLParser`)
+- **Trailing `?`** for boolean-returning functions: `valid?`, `empty?`. **Do not use `is_` prefix for these**
+- **`is_` prefix** — Reserved for guard-safe boolean checks: `is_valid`, `is_empty`
+- **`Error` suffix** for exception modules: `BadRequestError`
+- **Avoid `do_` prefix** for private functions — Find more descriptive names
+
+## Documentation
+
+- **Always include `@moduledoc`** — Use `@moduledoc false` if intentionally undocumented
+- **Place `@doc` and `@spec` immediately before `def`** — No blank line between them
+- **Use heredocs with markdown** — For multi-line documentation
+- **Document public functions, skip private ones** — Unless complexity warrants it
+
+## Ecto and Database
+
+- **Input Validation** — Use `Ecto.Schema.embedded_schema` for input validation (separate from DB schemas).
+    - **Use `@primary_key false`**
+    - **Define `changeset/2` and `parse/1`**
+    - **Transform to domain structs explicitly**
+- **Preloading** — Always preload associations used in templates
+- **Schema Fields** — Always use `:string` type (even for text columns)
+- **Changesets** — Use `Ecto.Changeset.get_field/2` to access fields. `validate_number` doesn't need `:allow_nil`
+- **Security** — Never cast programmatically set fields (like `user_id`); set them explicitly
+- **Seeds** — Remember to import `Ecto.Query`
+
+### Example Embedded Schema
 
 ```elixir
 defmodule MyApp.Requests.CreateOrder do
@@ -133,72 +198,51 @@ defmodule MyApp.Requests.CreateOrder do
 end
 ```
 
-### Usage in Controllers/Handlers
+## Phoenix Framework
 
-```elixir
-def create(conn, params) do
-  with {:ok, request} <- CreateOrder.parse(params),
-       {:ok, order} <- Orders.create(request) do
-    # ...
-  end
-end
-```
+### General Guidelines
 
-### Guidelines
+- **Router** — Be mindful of `scope` aliases. Do not create redundant aliases.
+- **Views** — `Phoenix.View` is not needed; do not use it.
+- **Project Structure** — Use `mix precommit` (if available).
 
-- **Use `@primary_key false`** — Input schemas don't need IDs
-- **Define a `changeset/1` or `changeset/2` function** — Encapsulates all validation logic
-- **Provide a `parse/1` function** — Returns `{:ok, struct}` or `{:error, changeset}` for clean integration with `with`
-- **Transform to domain structs explicitly** — Don't pass request schemas deep into your core; map to domain types
-- **Nest with `embeds_one`/`embeds_many`** — For complex nested input, define child embedded schemas
-- **Use for non-DB data too** — Contact forms, search filters, config parsing, webhook payloads
+### Phoenix HTML & HEEx
 
-## Process Design
+- **Templates** — Always use `~H` or `.html.heex`.
+- **Forms** — Use `Phoenix.Component` functions (`to_form/2`, `<.form>`, `<.input>`). Avoid deprecated `form_for`.
+    - **Form Access** — Access forms via `@form[:field]`. Never access changesets directly in templates (`@changeset[:field]`).
+    - **IDs** — Add unique DOM IDs to key elements.
+- **Interpolation** — Use `{}` for attributes and tag bodies. Use `<%= %>` only for blocks (if, for, case) inside tag bodies.
+    - **No Curly** — Use `phx-no-curly-interpolation` for code blocks containing literal curlies.
+- **Classes** — Use list syntax `class={["base", @cond && "active"]}` for conditional classes.
+- **Loops** — Use `for` comprehensions (`<%= for ... %>`), never `Enum.each`.
+- **Comments** — Use `<%!-- --%>`.
 
-- **Don't use processes for code organization** — Processes are for concurrency, shared state, and error isolation
-- **Encapsulate process interaction** — Don't scatter `GenServer.call/cast` across modules; wrap in a module API
-- **Avoid sending large messages** — Data is copied between processes; send only what's needed
-- **Provide child specs, not supervision trees** — Let users add your processes to their own supervisors
+### Phoenix LiveView
 
-## Library Design
+- **Navigation** — Use `<.link navigate={...}>` or `patch`. Avoid `live_redirect`.
+- **Naming** — Suffix LiveViews with `Live` (e.g., `WeatherLive`).
+- **Streams** — Use streams for collections to avoid memory issues.
+    - **Update** — `phx-update="stream"`.
+    - **Filtering** — Refetch and reset (`reset: true`). Streams are not enumerable.
+    - **Counting** — Track counts separately; streams don't support counting.
+- **Testing** — Use `Phoenix.LiveViewTest` and `LazyHTML`.
+    - **Selectors** — Test against DOM IDs, not raw text.
+    - **Forms** — Test using `render_submit` and `render_change`.
+- **Form Handling** — Create forms from params or changesets using `to_form/2` in the LiveView.
 
-- **Don't use application config for libraries** — Pass options as function arguments or keyword lists
-- **Stay in your namespace** — Library `:my_lib` should only define modules under `MyLib.*`
-- **Provide both `foo` and `foo!` variants** — Let callers choose whether to handle errors or raise
+### Authentication
 
-## Macros and Metaprogramming
+- **Router Organization**:
+    - `live_session :current_user` — For routes working with/without auth.
+    - `live_session :require_authenticated_user` — For routes requiring auth.
+    - **Don't duplicate** live_session names.
+- **Access** — Use `current_scope.user` (or assigned user from the session). Do not assume `@current_user` is automagically there without the right mount.
 
-- **Avoid macros when functions suffice** — Macros are harder to understand and debug
-- **Don't propagate dependencies from macros** — Avoid `import` inside `__using__/1` that surprises users
-- **Keep macro-generated code small** — Large expansions slow compilation and bloat artifacts
+### UI/UX and Assets
 
-## Testing
-
-- **Use `for` comprehensions for collection assertions** — `for post <- posts, do: assert %Post{} = post` gives better failure messages than `assert Enum.all?(...)`
-- **Put expected result on the right** — `assert actual == expected` unless pattern matching
-- **Test through the interface** — Prefer integration-style tests that call public APIs
-- **Generate unique test data** — Enables concurrent test execution
-
-## Formatting and Style
-
-- **Run `mix format`** — Use the official formatter for all code
-- **Limit lines to 98 characters** — Configure in `.formatter.exs` if needed
-- **Use blank lines to separate logical sections** — Between `def`s, after multiline assignments
-- **Avoid trailing whitespace and ensure final newline**
-- **Write self-documenting code** — Prefer clear names over comments explaining unclear code
-
-## Naming Conventions
-
-- **`snake_case`** for atoms, variables, functions, and file names
-- **`CamelCase`** for modules (keep acronyms uppercase: `HTTPClient`, `XMLParser`)
-- **Trailing `?`** for boolean-returning functions: `valid?`, `empty?`
-- **`is_` prefix** for guard-safe boolean checks: `is_valid`, `is_empty`
-- **`Error` suffix** for exception modules: `BadRequestError`
-- **Avoid `do_` prefix** for private functions — Find more descriptive names
-
-## Documentation
-
-- **Always include `@moduledoc`** — Use `@moduledoc false` if intentionally undocumented
-- **Place `@doc` and `@spec` immediately before `def`** — No blank line between them
-- **Use heredocs with markdown** — For multi-line documentation
-- **Document public functions, skip private ones** — Unless complexity warrants it
+- **Tailwind CSS** — Use v4 import syntax in `app.css`. Avoid `@apply`.
+- **Components** — Write custom Tailwind components; avoid heavy UI libraries if possible.
+- **Icons** — Use `<.icon name="hero-..." />`.
+- **JavaScript** — No inline `<script>` tags. Use hooks in `assets/js`.
+- **Design** — Focus on polished, responsive, world-class UI with micro-interactions.
